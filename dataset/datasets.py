@@ -18,6 +18,7 @@ class AudioDataset(Dataset):
             Dataset Initialization using soundata
             https://github.com/soundata/soundata.git
         '''
+        print(self.root)
         dataset = soundata.initialize(dataset_name=self.dataset_name, data_home=self.root)
         if download:
             dataset.download()
@@ -103,14 +104,15 @@ class ESC50(AudioDataset):
         return folds
 
 class UrbanSound8k(AudioDataset):
-    def __init__(self, root: str, args, download: bool = True, dataset_name: str = 'esc50'):
-        super().__init__(root)
+    def __init__(self, root: str, args, download: bool = True, dataset_name: str = 'urbansound8k'):
+        super().__init__(root, args, download, dataset_name='urbansound8k')
 
         print("Bulding Indexes")
         self.class_to_idx = {}
         self.categories, self.targets, self.fold_nums, self.audio_tensors = [], [], [], []
         for id in tqdm(self.ids, total=len(self.ids)):
             clip = self.clips[id]
+            print(clip)
             category, target, fold = clip.class_label, clip.class_id, clip.fold
             if self.class_to_idx.get(category) is None:
                 self.class_to_idx[category] = target
@@ -168,3 +170,7 @@ class UrbanSound8k(AudioDataset):
             indices = np.where(self.fold_nums == i)
             folds.append(Subset(self, indices))
         return folds
+
+if __name__ == "__main__":
+    esc50 = ESC50(root='/workspace/joel/CNNAudioClassification/data', args=None, download=True)
+    urbansound8k = UrbanSound8k(root='/workspace/joel/CNNAudioClassification/data', args=None, download=True)

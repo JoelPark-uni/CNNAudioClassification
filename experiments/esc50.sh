@@ -1,4 +1,4 @@
-for soft_epsilon in 0.05 0.1 0.2
+for soft_epsilon in 0 0.1 0.2
 do
     python train.py --root /workspace/CNNAudioClassification/data --out_dir checkpoints/e{$soft_epsilon} \
         --dataset_name esc50 --num_workers 8 --batch_size 32 \
