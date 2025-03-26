@@ -1,0 +1,12 @@
+/checkpoints
+/logs
+/data
+*.csv
+*.tar.gz
+*.pth
+*.pt
+*.log
+*.json
+*.txt
+*.yaml
+*.yml
