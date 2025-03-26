@@ -9,6 +9,5 @@
 *.pt
 *.log
 *.json
-*.txt
 *.yaml
 *.yml

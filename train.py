@@ -7,12 +7,14 @@ from torchvision import models, datasets, transforms
 from torch.utils.data import DataLoader, ConcatDataset
 import torchmetrics
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.callbacks import ModelCheckpoint, StochasticWeightAveraging
 import wandb
 from pytorch_lightning.loggers.wandb import WandbLogger
 
 import argparse
 import csv
+import random
+import numpy as np
 
 import dataset
 from config import *
@@ -29,7 +31,7 @@ class LitModel(pl.LightningModule):
         elif self.dataset_name == "urbansound8k":
             self.num_classes=10
 
-        self.model = XTiny(num_classes=self.num_classes, use_segmentation=args.use_segmentation)
+        self.model = XTiny(num_classes=self.num_classes, use_segmentation=args.use_segmentation, time_masking=args.time_masking, freq_masking=args.freq_masking)
         
         self.val_acc = torchmetrics.Accuracy(
             task='multiclass',
@@ -75,12 +77,12 @@ class LitModel(pl.LightningModule):
         if self.args.optimizer == 'adam':
             optimizer = Adam(self.parameters(), lr=self.args.lr)
         elif self.args.optimizer == 'sgd':
-            optimizer = SGD(self.parameters(), lr=self.args.lr, momentum=0.9, weight_decay=1e-4)
+            optimizer = SGD(self.parameters(), lr=self.args.lr, momentum=0.9, weight_decay=1e-5)
 
         if self.args.scheduler == 'plateau':
             scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, min_lr=1e-30)
         elif self.args.scheduler == 'cosine':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.args.epochs, eta_min=1e-6)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=1e-5)
 
         return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val_loss"}
     
@@ -119,6 +121,9 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--soft_epsilon', type=float, default=0)
 
+    parser.add_argument('--time_masking', type=int, default=None)
+    parser.add_argument('--freq_masking', type=int, default=None)
+
     # Model Arguments
     parser.add_argument('--use_segmentation', action='store_true')
     parser.add_argument('--model_name', type=str, default='1branch')
@@ -133,10 +138,16 @@ def parse_args():
 
     return parser.parse_args()
 
-
+def seed_everything(seed):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.random.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    pl.seed_everything(args.seed)
 
 def main(args):
-    pl.seed_everything(args.seed)
+    seed_everything(args.seed)
+
     model = LitModel(args)
     dirpath = args.out_dir
 
@@ -159,15 +170,17 @@ def main(args):
 
     fold_results = []
     for k_i in range(1, k+1):
-        call_back = pl.callbacks.ModelCheckpoint(
+        checkpoint_callback = ModelCheckpoint(
             monitor="val_acc",
             mode="max",
             dirpath=dirpath,
             filename=args.dataset_name + f"-fold{k_i}-" + "{epoch}-{val_acc:.04f}",
         )
+        swa_callback = StochasticWeightAveraging(swa_lrs=args.lr/10)
+        call_backs = [checkpoint_callback, swa_callback]
         trainer = pl.Trainer(
             max_epochs=args.epochs,
-            callbacks=[call_back],
+            callbacks=call_backs,
         )
         result = train_kfold(model=model, trainer=trainer, audio_ds=audio_ds, k=k_i, args=args)
         result['fold'] = k_i

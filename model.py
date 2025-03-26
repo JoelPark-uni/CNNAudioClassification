@@ -1,6 +1,7 @@
 import torch
 import torchvision.transforms as transforms
 from torch import nn
+import torchaudio.transforms as T
 from torchlibrosa.stft import Spectrogram, LogmelFilterBank
 from config import *
 __all__ = ['MobileNetV2', 'mobilenet_v2']
@@ -55,7 +56,7 @@ class InvertedResidual(nn.Module):
 
 
 class AudioExtractor(nn.Module):
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, time_masking=None, freq_masking=None, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         # self.pos_mask = torch.flipud(
         #     torch.arange(mel_bins**2).reshape(mel_bins, mel_bins) / (mel_bins**2)
@@ -86,6 +87,10 @@ class AudioExtractor(nn.Module):
         )
         self.BN = nn.BatchNorm2d(mel_bins)
 
+        self.time_masking = T.TimeMasking(time_masking) if time_masking else None
+        self.freq_masking = T.FrequencyMasking(freq_masking) if freq_masking else None
+        
+
     def forward(self, x):
         # print(f"Shpae before Spectrogram : {x.shape}")
         x = self.spectogram_extractor(x)
@@ -94,6 +99,11 @@ class AudioExtractor(nn.Module):
         # print(f"Shape after Logmel : {x.shape}")
         # Resize to (64, 64)
         # x = transforms.Resize((mel_bins, mel_bins))(x)
+
+        if self.time_masking is not None:
+            x = self.time_masking(x)
+        if self.freq_masking is not None:
+            x = self.freq_masking(x)
 
         # Batch, Channel, Height, Width
         x = x.transpose(1, 3)
@@ -119,7 +129,10 @@ class MobileNetV2(nn.Module):
                  block=None,
                  norm_layer=None,
                  audio_extractor=True,
-                 use_segmentation=False):
+                 use_segmentation=False,
+                 time_masking=None,
+                 freq_masking=None,
+                 *args, **kwargs):
         super(MobileNetV2, self).__init__()
 
         if block is None:
@@ -153,7 +166,7 @@ class MobileNetV2(nn.Module):
             raise ValueError("inverted_residual_setting should be non-empty "
                              "or a 4-element list, got {}".format(inverted_residual_setting))
         if audio_extractor is not None:
-            self.audio_extractor = AudioExtractor()
+            self.audio_extractor = AudioExtractor(time_masking=time_masking, freq_masking=freq_masking)
         else:
             self.audio_extractor = None
 
