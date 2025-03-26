@@ -1,4 +1,6 @@
 /checkpoints
+/__pycache__
+*.pyc
 /logs
 /data
 *.csv
