@@ -19,6 +19,7 @@ import numpy as np
 import dataset
 from config import *
 from model import MobileNetV2 as XTiny
+from model import AudioExtractor
 
 class LitModel(pl.LightningModule):
     def __init__(self, args=None):
@@ -31,7 +32,15 @@ class LitModel(pl.LightningModule):
         elif self.dataset_name == "urbansound8k":
             self.num_classes=10
 
-        self.model = XTiny(num_classes=self.num_classes, use_segmentation=args.use_segmentation, time_masking=args.time_masking, freq_masking=args.freq_masking)
+        self.audio_extractor = AudioExtractor(n_time_masks=args.n_time_masks, 
+                                              time_mask_param=args.time_mask_param, 
+                                              n_freq_masks=args.n_freq_masks, 
+                                              freq_mask_param=args.freq_mask_param)
+
+        self.model = XTiny(num_classes=self.num_classes,
+                           audio_extractor=self.audio_extractor,
+                           use_segmentation=args.use_segmentation,
+                           margin_ratio=args.margin_ratio,)
         
         self.val_acc = torchmetrics.Accuracy(
             task='multiclass',
@@ -121,14 +130,18 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--soft_epsilon', type=float, default=0)
 
-    parser.add_argument('--time_masking', type=int, default=None)
-    parser.add_argument('--freq_masking', type=int, default=None)
+    # Data Augmentation Arguments
+    parser.add_argument('--n_time_masks', type=int, default=None)
+    parser.add_argument('--n_freq_masks', type=int, default=None)
+    parser.add_argument('--time_mask_param', type=int, default=None)
+    parser.add_argument('--freq_mask_param', type=int, default=None)
 
     # Model Arguments
     parser.add_argument('--use_segmentation', action='store_true')
     parser.add_argument('--model_name', type=str, default='1branch')
     parser.add_argument('--seed', type=int, default=777777)
     parser.add_argument('--out_dir', type=str, default='checkpoints')
+    parser.add_argument('--margin_ratio', type=int, default=0)
 
     # Training Arguments
     parser.add_argument('--optimizer', type=str, default='sgd')
@@ -139,11 +152,11 @@ def parse_args():
     return parser.parse_args()
 
 def seed_everything(seed):
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.random.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    pl.seed_everything(args.seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.random.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    pl.seed_everything(seed)
 
 def main(args):
     seed_everything(args.seed)
@@ -159,7 +172,7 @@ def main(args):
             dataset_name = args.dataset_name
         )
     elif args.dataset_name == 'urbansound8k':
-        audio_ds = dataset.UrbanSound8K(
+        audio_ds = dataset.UrbanSound8k(
             root = args.root,
             args = args,
             download = True,
@@ -186,7 +199,7 @@ def main(args):
         result['fold'] = k_i
         fold_results.append(result)
 
-    with open(f'fold_results_{args.dataset_name}_e{args.soft_epsilon}.csv', mode='w', newline="", encoding='utf-8') as f:
+    with open(f'fold_results_{args.dataset_name}_mask{args.time_mask_param}-{args.freq_mask_param}.csv', mode='w', newline="", encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fold_results[0].keys())
         writer.writeheader()
         for fold_result in fold_results:

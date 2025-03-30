@@ -56,7 +56,7 @@ class InvertedResidual(nn.Module):
 
 
 class AudioExtractor(nn.Module):
-    def __init__(self, time_masking=None, freq_masking=None, *args, **kwargs) -> None:
+    def __init__(self, n_time_masks, time_mask_param, n_freq_masks, freq_mask_param, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         # self.pos_mask = torch.flipud(
         #     torch.arange(mel_bins**2).reshape(mel_bins, mel_bins) / (mel_bins**2)
@@ -87,8 +87,16 @@ class AudioExtractor(nn.Module):
         )
         self.BN = nn.BatchNorm2d(mel_bins)
 
-        self.time_masking = T.TimeMasking(time_masking) if time_masking else None
-        self.freq_masking = T.FrequencyMasking(freq_masking) if freq_masking else None
+        if n_time_masks is not None and n_freq_masks is not None:
+            self.SpecAugment = T.SpecAugment(n_time_masks=n_time_masks, 
+                                            time_mask_param=time_mask_param, 
+                                            n_freq_masks=n_freq_masks, 
+                                            freq_mask_param=freq_mask_param, 
+                                            iid_masks=True,
+                                            p=0.2,
+                                            zero_masking=False)
+        else:
+            self.SpecAugment = None
         
 
     def forward(self, x):
@@ -100,10 +108,9 @@ class AudioExtractor(nn.Module):
         # Resize to (64, 64)
         # x = transforms.Resize((mel_bins, mel_bins))(x)
 
-        if self.time_masking is not None:
-            x = self.time_masking(x)
-        if self.freq_masking is not None:
-            x = self.freq_masking(x)
+        if self.training and self.SpecAugment is not None:
+            x = self.SpecAugment(x)
+        # print(f"Shape after SpecAugment : {x.shape}")
 
         # Batch, Channel, Height, Width
         x = x.transpose(1, 3)
@@ -130,8 +137,7 @@ class MobileNetV2(nn.Module):
                  norm_layer=None,
                  audio_extractor=True,
                  use_segmentation=False,
-                 time_masking=None,
-                 freq_masking=None,
+                 margin_ratio=0,
                  *args, **kwargs):
         super(MobileNetV2, self).__init__()
 
@@ -166,34 +172,33 @@ class MobileNetV2(nn.Module):
             raise ValueError("inverted_residual_setting should be non-empty "
                              "or a 4-element list, got {}".format(inverted_residual_setting))
         if audio_extractor is not None:
-            self.audio_extractor = AudioExtractor(time_masking=time_masking, freq_masking=freq_masking)
-        else:
-            self.audio_extractor = None
+            self.audio_extractor = audio_extractor
 
         self.use_segmentation = use_segmentation
+        self.margin_ratio = margin_ratio
 
         self.features_0 = nn.ModuleList()
         self.features_0_2 = nn.ModuleList()
         self.features_0_3 = nn.ModuleList()
         
-        # self.features_1 = nn.ModuleList()
-        # self.features_1_2 = nn.ModuleList()
-        # self.features_1_3 = nn.ModuleList()
+        self.features_1 = nn.ModuleList()
+        self.features_1_2 = nn.ModuleList()
+        self.features_1_3 = nn.ModuleList()
         
-        # self.features_2 = nn.ModuleList()
-        # self.features_2_2 = nn.ModuleList()
-        # self.features_2_3 = nn.ModuleList()
+        self.features_2 = nn.ModuleList()
+        self.features_2_2 = nn.ModuleList()
+        self.features_2_3 = nn.ModuleList()
         
-        # self.features_3 = nn.ModuleList()
-        # self.features_3_2 = nn.ModuleList()
-        # self.features_3_3 = nn.ModuleList()
+        self.features_3 = nn.ModuleList()
+        self.features_3_2 = nn.ModuleList()
+        self.features_3_3 = nn.ModuleList()
         
         # self.features_4 = nn.ModuleList()
         # self.features_4_2 = nn.ModuleList()
         # self.features_4_3 = nn.ModuleList()
         
-        # seq_list = [self.features_0, self.features_1, self.features_2, self.features_3, self.features_4]
-        seq_list = [self.features_0]
+        seq_list = [self.features_0, self.features_1, self.features_2, self.features_3]
+        # seq_list = [self.features_0]
         
         # Initialize input_channel once before loop
         initial_input_channel = input_channel
@@ -211,8 +216,8 @@ class MobileNetV2(nn.Module):
                     input_channel = output_channel
                 A.extend(inverted_residuals)
         
-        # seq_3_list = [self.features_0_3, self.features_1_3, self.features_2_3, self.features_3_3, self.features_4_3]
-        seq_3_list = [self.features_0_3]
+        seq_3_list = [self.features_0_3, self.features_1_3, self.features_2_3, self.features_3_3]
+        # seq_3_list = [self.features_0_3]
         for D in seq_3_list:
             input_channel = _make_divisible(input_channel * width_mult, round_nearest)
             for t, c, n, s in one_more_setting:
@@ -224,8 +229,8 @@ class MobileNetV2(nn.Module):
                     input_channel = output_channel
                 D.extend(one_more_residuals)
         
-        # seq_2_list = [self.features_0_2, self.features_1_2, self.features_2_2, self.features_3_2, self.features_4_2]
-        seq_2_list = [self.features_0_2]
+        seq_2_list = [self.features_0_2, self.features_1_2, self.features_2_2, self.features_3_2]
+        # seq_2_list = [self.features_0_2]
         
         for C in seq_2_list:
             input_channel = _make_divisible(input_channel * width_mult, round_nearest)
@@ -255,17 +260,16 @@ class MobileNetV2(nn.Module):
         # print(f"After Audio Extractor : {x.shape}")
         # exit()
         if self.use_segmentation:
-            width = x.shape[2]
-            # print(f"Width : {width}")
-            slice_width = round(width*0.58)
-            # print(f"Slice Width : {slice_width}")
-            center = (width-slice_width)//2
-            # print(f"Center : {center}")
-            x0 = x[:, :, :slice_width, :slice_width]
-            x1 = x[:, :, :slice_width, width-slice_width:width]
-            x2 = x[:, :, width-slice_width:width, :slice_width]
-            x3 = x[:, :, width-slice_width:width, width-slice_width:width]
-            x4 = x[:, :, center:center+slice_width, center:center+slice_width]
+            width = x.shape[3]
+            slice_width = 16 + 3 * self.margin_ratio
+            margin = 4 * self.margin_ratio
+            hop = slice_width - margin
+            assert hop*3+slice_width == width
+            
+            x0 = x[:, :, :, :slice_width]
+            x1 = x[:, :, :, hop*1:hop*1+slice_width]
+            x2 = x[:, :, :, hop*2:hop*2+slice_width]
+            x3 = x[:, :, :, hop*3:hop*3+slice_width]
         else:
             x0 = x.clone().detach()
             # x0 = x.clone().detach()
@@ -281,33 +285,34 @@ class MobileNetV2(nn.Module):
         x0_1 = x0 + x0_3
         for layer in self.features_0_2:
             x0_1 = layer(x0_1)
+            
+        if self.use_segmentation:
+            for layer in self.features_1:
+                x1 = layer(x1)
+            x1_3 = x1
+            for layer in self.features_1_3:
+                x1_3 = layer(x1_3)
+            x1_1 = x1 + x1_3
+            for layer in self.features_1_2:
+                x1_1 = layer(x1_1)
 
-        # for layer in self.features_1:
-        #     x1 = layer(x1)
-        # x1_3 = x1
-        # for layer in self.features_1_3:
-        #     x1_3 = layer(x1_3)
-        # x1_1 = x1 + x1_3
-        # for layer in self.features_1_2:
-        #     x1_1 = layer(x1_1)
+            for layer in self.features_2:
+                x2 = layer(x2)
+            x2_3 = x2
+            for layer in self.features_2_3:
+                x2_3 = layer(x2_3)
+            x2_1 = x2 + x2_3
+            for layer in self.features_2_2:
+                x2_1 = layer(x2_1)
 
-        # for layer in self.features_2:
-        #     x2 = layer(x2)
-        # x2_3 = x2
-        # for layer in self.features_2_3:
-        #     x2_3 = layer(x2_3)
-        # x2_1 = x2 + x2_3
-        # for layer in self.features_2_2:
-        #     x2_1 = layer(x2_1)
-
-        # for layer in self.features_3:
-        #     x3 = layer(x3)
-        # x3_3 = x3
-        # for layer in self.features_3_3:
-        #     x3_3 = layer(x3_3)
-        # x3_1 = x3 + x3_3
-        # for layer in self.features_3_2:
-        #     x3_1 = layer(x3_1)
+            for layer in self.features_3:
+                x3 = layer(x3)
+            x3_3 = x3
+            for layer in self.features_3_3:
+                x3_3 = layer(x3_3)
+            x3_1 = x3 + x3_3
+            for layer in self.features_3_2:
+                x3_1 = layer(x3_1)
 
         # for layer in self.features_4:
         #     x4 = layer(x4)
@@ -319,17 +324,15 @@ class MobileNetV2(nn.Module):
         #     x4_1 = layer(x4_1)
 
         x0 = nn.functional.adaptive_avg_pool2d(x0_1, 1).reshape(x0_1.shape[0], -1)
-        # x1 = nn.functional.adaptive_avg_pool2d(x1_1, 1).reshape(x1_1.shape[0], -1)
-        # x2 = nn.functional.adaptive_avg_pool2d(x2_1, 1).reshape(x2_1.shape[0], -1)
-        # x3 = nn.functional.adaptive_avg_pool2d(x3_1, 1).reshape(x3_1.shape[0], -1)
-        # x4 = nn.functional.adaptive_avg_pool2d(x4_1, 1).reshape(x4_1.shape[0], -1)
+        if self.use_segmentation:
+            x1 = nn.functional.adaptive_avg_pool2d(x1_1, 1).reshape(x1_1.shape[0], -1)
+            x2 = nn.functional.adaptive_avg_pool2d(x2_1, 1).reshape(x2_1.shape[0], -1)
+            x3 = nn.functional.adaptive_avg_pool2d(x3_1, 1).reshape(x3_1.shape[0], -1)
+            add_x = x0 + x1 + x2 + x3
+        else:
+            add_x = x0
         
-        # add_x = torch.add(x0, x1)
-        # add_x = torch.add(add_x, x2)
-        # add_x = torch.add(add_x, x3)
-        # add_x = torch.add(add_x, x4)
-        
-        x = self.classifier(x0)
+        x = self.classifier(add_x)
         # DEBUG
         # print("CLASSIFIER OUTPUT")
         # print(x)

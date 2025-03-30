@@ -3,10 +3,12 @@ from tqdm import tqdm
 import os
 import torch
 import torch.nn.functional as F
+import torchaudio.transforms as T
 import config
 import random
 import numpy as np
 import soundata
+
 
 
 class AudioDataset(Dataset):
@@ -71,26 +73,25 @@ class ESC50(AudioDataset):
     
     def get_audio_embeddings(self, clip):
         waveform, sample_rate = clip.audio
+        resampler = T.Resample(orig_freq=sample_rate, new_freq=config.sample_rate)
+        waveform = resampler(torch.FloatTensor(waveform))
         waveform = waveform.reshape(-1)
         # waveform is shorter than predefined audio duration,
         # so waveform is extended
-        if config.audio_duration*sample_rate >= waveform.shape[0]:
-            repeat_factor = int(np.ceil((config.audio_duration*sample_rate) /
-                                        waveform.shape[0]))
+        if config.inputLength >= waveform.shape[0]:
+            repeat_factor = int(np.ceil((config.inputLength) / waveform.shape[0]))
             # Repeat waveform by repeat_factor to match config.audio_duration
             waveform = waveform.repeat(repeat_factor)
             # remove excess part of waveform
-            waveform = waveform[0:config.audio_duration*sample_rate]
+            waveform = waveform[0:config.inputLength]
         else:
             # waveform is longer than predefined audio duration,
             # so waveform is trimmed
             start_index = random.randrange(
-                waveform.shape[0] - config.audio_duration*sample_rate)
-            waveform = waveform[start_index:start_index +config.audio_duration*sample_rate]
+                waveform.shape[0] - config.inputLength)
+            waveform = waveform[start_index:start_index +config.inputLength]
         
-        audio_tensor = torch.FloatTensor(waveform).reshape(-1)
-        # audio_tensor = audio_tensor.reshape(1, -1).cuda() if torch.cuda.is_available() else audio_tensor.reshape(1, -1)
-        # audio_tensor = audio_tensor.reshape(1, -1)
+        audio_tensor = waveform.reshape(-1)
         
         return audio_tensor
 
@@ -103,9 +104,10 @@ class ESC50(AudioDataset):
         return folds
 
 class UrbanSound8k(AudioDataset):
-    def __init__(self, root: str, args, download: bool = True, dataset_name: str = 'esc50'):
-        super().__init__(root)
-
+    def __init__(self, root: str, args, download: bool = True, dataset_name: str = 'urbansound8k'):
+        super().__init__(root, args, download, dataset_name='urbansound8k')
+        config.audio_duration = 4
+        config.inputLength = config.sample_rate * config.audio_duration
         print("Bulding Indexes")
         self.class_to_idx = {}
         self.categories, self.targets, self.fold_nums, self.audio_tensors = [], [], [], []
@@ -129,7 +131,7 @@ class UrbanSound8k(AudioDataset):
 
     def __getitem__(self, index):
         audio_tensor = self.audio_tensors[index]
-        target = self.targets[index]
+        target = torch.tensor(self.targets[index])
         
         return audio_tensor, target
 
@@ -138,26 +140,26 @@ class UrbanSound8k(AudioDataset):
     
     def get_audio_embeddings(self, clip):
         waveform, sample_rate = clip.audio
+        resampler = T.Resample(orig_freq=sample_rate, new_freq=config.sample_rate)
+        waveform = resampler(torch.FloatTensor(waveform))
         waveform = waveform.reshape(-1)
         # waveform is shorter than predefined audio duration,
         # so waveform is extended
-        if config.audio_duration*sample_rate >= waveform.shape[0]:
-            repeat_factor = int(np.ceil((config.audio_duration*sample_rate) /
-                                        waveform.shape[0]))
-            # Repeat waveform by repeat_factor to match config.audio_duration
-            waveform = waveform.repeat(repeat_factor)
-            # remove excess part of waveform
-            waveform = waveform[0:config.audio_duration*sample_rate]
+        if config.inputLength >= waveform.shape[0]:
+            waveform = F.pad(waveform, (0, config.inputLength - waveform.shape[0]))
+            # repeat_factor = int(np.ceil((config.inputLength) / waveform.shape[0]))
+            # # Repeat waveform by repeat_factor to match config.audio_duration
+            # waveform = waveform.repeat(repeat_factor)
+            # # remove excess part of waveform
+            # waveform = waveform[0:config.inputLength]
         else:
             # waveform is longer than predefined audio duration,
             # so waveform is trimmed
             start_index = random.randrange(
-                waveform.shape[0] - config.audio_duration*sample_rate)
-            waveform = waveform[start_index:start_index +config.audio_duration*sample_rate]
+                waveform.shape[0] - config.inputLength)
+            waveform = waveform[start_index:start_index +config.inputLength]
         
-        audio_tensor = torch.FloatTensor(waveform).reshape(-1)
-        audio_tensor = audio_tensor.reshape(1, -1).cuda() if torch.cuda.is_available() else audio_tensor.reshape(1, -1)
-        audio_tensor = audio_tensor.reshape(1, -1)
+        audio_tensor = waveform.reshape(-1)
         
         return audio_tensor
 
@@ -165,6 +167,6 @@ class UrbanSound8k(AudioDataset):
         folds = []
         self.fold_nums = np.array(self.fold_nums)
         for i in range(1, k+1):
-            indices = np.where(self.fold_nums == i)
+            indices = np.where(self.fold_nums == i)[0]
             folds.append(Subset(self, indices))
         return folds
